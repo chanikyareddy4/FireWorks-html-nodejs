@@ -1,0 +1,35 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: fire-work
+spec:
+  replicas: 2
+
+  selector:
+    matchLabels:
+      app: fire-work
+
+  template:
+    metadata:
+      labels:
+        app: fire-work
+
+    spec:
+      containers:
+        - name: fire-work
+
+          image: 593793049484.dkr.ecr.us-east-1.amazonaws.com/fireworks:1
+
+          imagePullPolicy: Always
+
+          ports:
+            - containerPort: 8080
+
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

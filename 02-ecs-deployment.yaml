@@ -1,0 +1,576 @@
+AWSTemplateFormatVersion: '2010-09-09'
+
+Description: >
+  ECS Fargate deployment with Application Load Balancer.
+  ECS tasks run in private subnets on port 8080.
+  Application image is stored in Amazon ECR.
+
+
+# ================================================================
+# PARAMETERS
+# ================================================================
+
+Parameters:
+
+  # ============================================================
+  # AWS ACCOUNT ID
+  # ============================================================
+
+  AccountId:
+    Type: String
+    Default: "593793049484"
+    Description: AWS Account ID
+
+
+  # ============================================================
+  # AWS REGION
+  # ============================================================
+
+  Region:
+    Type: String
+    Default: us-east-1
+    Description: AWS Region
+
+
+  # ============================================================
+  # ENVIRONMENT
+  # ============================================================
+
+  EnvironmentName:
+    Type: String
+    Default: dev
+    Description: Environment name
+
+
+  # ============================================================
+  # NETWORK STACK
+  # ============================================================
+
+  NetworkStackName:
+    Type: String
+    Default: vpc-ecs-network-create
+    Description: Name of the network CloudFormation stack
+
+
+  # ============================================================
+  # ECR REPOSITORY
+  # ============================================================
+
+  ECRRepositoryName:
+    Type: String
+    Default: fireworks
+    Description: Existing ECR repository name
+
+
+  ECRImageTag:
+    Type: String
+    Default: 1
+    Description: ECR image tag
+
+
+  # ============================================================
+  # CONTAINER
+  # ============================================================
+
+  ContainerPort:
+    Type: Number
+    Default: 8080
+    Description: Application container port
+
+
+  # ============================================================
+  # ECS DESIRED COUNT
+  # ============================================================
+
+  DesiredCount:
+    Type: Number
+    Default: 1
+    Description: Number of ECS tasks
+
+
+# ================================================================
+# RESOURCES
+# ================================================================
+
+Resources:
+
+
+  # ============================================================
+  # ECS CLUSTER
+  # ============================================================
+
+  ECSCluster:
+    Type: AWS::ECS::Cluster
+
+    Properties:
+
+      ClusterName:
+        !Sub '${EnvironmentName}-ecs-cluster'
+
+      ClusterSettings:
+
+        - Name: containerInsights
+          Value: enabled
+
+      Tags:
+
+        - Key: Name
+          Value:
+            !Sub '${EnvironmentName}-ecs-cluster'
+
+
+  # ============================================================
+  # ECS TASK EXECUTION ROLE
+  # ============================================================
+
+  ECSTaskExecutionRole:
+    Type: AWS::IAM::Role
+
+    Properties:
+
+      RoleName:
+        !Sub '${EnvironmentName}-ecs-task-execution-role'
+
+      AssumeRolePolicyDocument:
+
+        Version: '2012-10-17'
+
+        Statement:
+
+          - Effect: Allow
+
+            Principal:
+
+              Service:
+                - ecs-tasks.amazonaws.com
+
+            Action:
+              - sts:AssumeRole
+
+      ManagedPolicyArns:
+
+        - arn:aws:iam::aws:policy/service-role/AmazonECSTaskExecutionRolePolicy
+
+
+  # ============================================================
+  # ECS TASK ROLE
+  # ============================================================
+
+  ECSTaskRole:
+    Type: AWS::IAM::Role
+
+    Properties:
+
+      RoleName:
+        !Sub '${EnvironmentName}-ecs-task-role'
+
+      AssumeRolePolicyDocument:
+
+        Version: '2012-10-17'
+
+        Statement:
+
+          - Effect: Allow
+
+            Principal:
+
+              Service:
+                - ecs-tasks.amazonaws.com
+
+            Action:
+              - sts:AssumeRole
+
+
+  # ============================================================
+  # CLOUDWATCH LOG GROUP
+  # ============================================================
+
+  ECSLogGroup:
+    Type: AWS::Logs::LogGroup
+
+    Properties:
+
+      LogGroupName:
+        !Sub '/ecs/${EnvironmentName}-app'
+
+      RetentionInDays: 7
+
+
+  # ============================================================
+  # ECS TASK DEFINITION
+  # ============================================================
+
+  ECSTaskDefinition:
+    Type: AWS::ECS::TaskDefinition
+
+    Properties:
+
+      Family:
+        !Sub '${EnvironmentName}-app'
+
+      NetworkMode: awsvpc
+
+      RequiresCompatibilities:
+
+        - FARGATE
+
+      Cpu: '256'
+
+      Memory: '512'
+
+      ExecutionRoleArn:
+        !GetAtt ECSTaskExecutionRole.Arn
+
+      TaskRoleArn:
+        !GetAtt ECSTaskRole.Arn
+
+
+      # ========================================================
+      # CONTAINER
+      # ========================================================
+
+      ContainerDefinitions:
+
+        - Name: app
+
+          Image:
+            !Sub '${AccountId}.dkr.ecr.${Region}.amazonaws.com/${ECRRepositoryName}:${ECRImageTag}'
+
+          Essential: true
+
+          PortMappings:
+
+            - ContainerPort:
+                !Ref ContainerPort
+
+              HostPort:
+                !Ref ContainerPort
+
+              Protocol: tcp
+
+
+          # ====================================================
+          # CLOUDWATCH LOGGING
+          # ====================================================
+
+          LogConfiguration:
+
+            LogDriver: awslogs
+
+            Options:
+
+              awslogs-group:
+                !Ref ECSLogGroup
+
+              awslogs-region:
+                !Ref AWS::Region
+
+              awslogs-stream-prefix: ecs
+
+
+  # ============================================================
+  # APPLICATION LOAD BALANCER
+  # ============================================================
+
+  ApplicationLoadBalancer:
+    Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+
+    Properties:
+
+      Name:
+        !Sub '${EnvironmentName}-alb'
+
+      Scheme: internet-facing
+
+      Type: application
+
+      IpAddressType: ipv4
+
+
+      # ========================================================
+      # ALB SECURITY GROUP
+      # ========================================================
+
+      SecurityGroups:
+
+        - Fn::ImportValue:
+            !Sub '${NetworkStackName}-ALBSecurityGroup'
+
+
+      # ========================================================
+      # PUBLIC SUBNETS
+      # ========================================================
+
+      Subnets:
+
+        - Fn::ImportValue:
+            !Sub '${NetworkStackName}-PublicSubnet1'
+
+        - Fn::ImportValue:
+            !Sub '${NetworkStackName}-PublicSubnet2'
+
+
+      Tags:
+
+        - Key: Name
+          Value:
+            !Sub '${EnvironmentName}-alb'
+
+
+  # ============================================================
+  # TARGET GROUP
+  # ============================================================
+
+  TargetGroup:
+    Type: AWS::ElasticLoadBalancingV2::TargetGroup
+
+    Properties:
+
+      Name:
+        !Sub '${EnvironmentName}-tg'
+
+      VpcId:
+
+        Fn::ImportValue:
+          !Sub '${NetworkStackName}-VPCId'
+
+      Protocol: HTTP
+
+      Port: 8080
+
+      TargetType: ip
+
+
+      # ========================================================
+      # HEALTH CHECK
+      # ========================================================
+
+      HealthCheckEnabled: true
+
+      HealthCheckProtocol: HTTP
+
+      HealthCheckPort: '8080'
+
+      HealthCheckPath: /
+
+      HealthCheckIntervalSeconds: 30
+
+      HealthCheckTimeoutSeconds: 5
+
+      HealthyThresholdCount: 2
+
+      UnhealthyThresholdCount: 3
+
+      Matcher:
+
+        HttpCode: '200-399'
+
+
+      Tags:
+
+        - Key: Name
+          Value:
+            !Sub '${EnvironmentName}-target-group'
+
+
+  # ============================================================
+  # ALB LISTENER
+  # ============================================================
+
+  ALBListener:
+    Type: AWS::ElasticLoadBalancingV2::Listener
+
+    Properties:
+
+      LoadBalancerArn:
+        !Ref ApplicationLoadBalancer
+
+      Port: 80
+
+      Protocol: HTTP
+
+      DefaultActions:
+
+        - Type: forward
+
+          TargetGroupArn:
+            !Ref TargetGroup
+
+
+  # ============================================================
+  # ECS SERVICE
+  # ============================================================
+
+  ECSService:
+    Type: AWS::ECS::Service
+
+    DependsOn:
+
+      - ALBListener
+
+    Properties:
+
+      ServiceName:
+        !Sub '${EnvironmentName}-service'
+
+      Cluster:
+        !Ref ECSCluster
+
+      TaskDefinition:
+        !Ref ECSTaskDefinition
+
+      DesiredCount:
+        !Ref DesiredCount
+
+      LaunchType: FARGATE
+
+
+      # ========================================================
+      # DEPLOYMENT CONFIGURATION
+      # ========================================================
+
+      DeploymentConfiguration:
+
+        MaximumPercent: 200
+
+        MinimumHealthyPercent: 100
+
+
+      # ========================================================
+      # PRIVATE ECS NETWORK
+      # ========================================================
+
+      NetworkConfiguration:
+
+        AwsvpcConfiguration:
+
+          # ECS TASKS DO NOT GET PUBLIC IP
+
+          AssignPublicIp: DISABLED
+
+
+          # ECS SECURITY GROUP
+
+          SecurityGroups:
+
+            - Fn::ImportValue:
+                !Sub '${NetworkStackName}-ECSSecurityGroup'
+
+
+          # PRIVATE SUBNETS
+
+          Subnets:
+
+            - Fn::ImportValue:
+                !Sub '${NetworkStackName}-PrivateSubnet1'
+
+            - Fn::ImportValue:
+                !Sub '${NetworkStackName}-PrivateSubnet2'
+
+
+      # ========================================================
+      # ALB → ECS
+      # ========================================================
+
+      LoadBalancers:
+
+        - ContainerName: app
+
+          ContainerPort: 8080
+
+          TargetGroupArn:
+            !Ref TargetGroup
+
+
+      HealthCheckGracePeriodSeconds: 60
+
+
+# ================================================================
+# OUTPUTS
+# ================================================================
+
+Outputs:
+
+
+  # ============================================================
+  # ECS CLUSTER
+  # ============================================================
+
+  ECSCluster:
+
+    Description: ECS Cluster
+
+    Value:
+      !Ref ECSCluster
+
+
+  # ============================================================
+  # ECS SERVICE
+  # ============================================================
+
+  ECSService:
+
+    Description: ECS Service
+
+    Value:
+      !Ref ECSService
+
+
+  # ============================================================
+  # TASK DEFINITION
+  # ============================================================
+
+  TaskDefinition:
+
+    Description: ECS Task Definition
+
+    Value:
+      !Ref ECSTaskDefinition
+
+
+  # ============================================================
+  # ECR IMAGE
+  # ============================================================
+
+  ECRImage:
+
+    Description: ECR image used by ECS
+
+    Value:
+      !Sub '${AccountId}.dkr.ecr.${Region}.amazonaws.com/${ECRRepositoryName}:${ECRImageTag}'
+
+
+  # ============================================================
+  # ALB DNS NAME
+  # ============================================================
+
+  ALBDNSName:
+
+    Description: Application Load Balancer DNS name
+
+    Value:
+      !GetAtt ApplicationLoadBalancer.DNSName
+
+
+  # ============================================================
+  # APPLICATION URL
+  # ============================================================
+
+  ALBURL:
+
+    Description: Application URL
+
+    Value:
+      !Sub 'http://${ApplicationLoadBalancer.DNSName}'
+
+
+  # ============================================================
+  # TARGET GROUP
+  # ============================================================
+
+  TargetGroup:
+
+    Description: Target Group
+
+    Value:
+      !Ref TargetGroup
